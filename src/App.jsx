@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
+import { Scanner } from '@yudiel/react-qr-scanner';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('manufacturer');
@@ -173,72 +174,135 @@ function PharmacySimView() {
 /* ==========================================================================
    3. CONSUMER VERIFICATION SCREEN (Stateful Serialization UI)
    ========================================================================== */
+async function hashDeviceId(rawId) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(rawId + "MedVerify_SecureSalt_2026"); 
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 function ConsumerSimView() {
-  const [gtin, setGtin] = useState('00312345678906');
-  const [serial, setSerial] = useState('000001');
   const [deviceId, setDeviceId] = useState('user-device-abc');
   const [verificationResult, setVerificationResult] = useState(null);
+  const [isScanning, setIsScanning] = useState(true);
+  const [scannedData, setScannedData] = useState({ gtin: '', serial: '' });
 
-  const handleVerifyScan = async () => {
-    setVerificationResult('Verifying...');
+  const executeVerification = async (scannedGtin, scannedSerial) => {
+    setVerificationResult({ color: '#333', fontColor: '#FFF', text: 'Verifying with Supabase...' });
 
-    // Fetch child record and join parent shipment state
+    // Hash the ID locally before database comparison
+    const hashedDeviceToken = await hashDeviceId(deviceId);
+
     const { data: item, error } = await supabase
       .from('child_items')
       .select('*, parent_shipments(is_compromised, status)')
-      .eq('gtin', gtin)
-      .eq('serial', serial)
+      .eq('gtin', scannedGtin)
+      .eq('serial', scannedSerial)
       .single();
 
     if (error || !item) {
-      return setVerificationResult({ color: '#EF4444', text: '🔴 RED ALERT: Invalid Serial Number' });
+      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Invalid Serial Number' });
     }
 
     if (item.parent_shipments?.is_compromised) {
-      return setVerificationResult({ color: '#EF4444', text: '🔴 RED ALERT: Thermal Breach Detected in Transit' });
+      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Thermal Breach Detected' });
     }
 
     if (item.status === 'BURNED_ANOMALY') {
-      return setVerificationResult({ color: '#EF4444', text: '🔴 RED ALERT: Product Flagged as Cloned Anomaly' });
+      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Product Flagged as Clone' });
     }
 
     if (item.status === 'RECEIVED_AT_PHARMACY' || item.status === 'ACTIVATED') {
       if (!item.device_id_hash) {
-        // First scan activation
-        await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: deviceId }).eq('serial', serial);
-        return setVerificationResult({ color: '#10B981', text: '🟢 GREEN: Verified Authentic & Activated' });
-      } else if (item.device_id_hash === deviceId) {
-        return setVerificationResult({ color: '#10B981', text: '🟢 GREEN: Scanned by you' });
+        // Store only the irreversible hash in the database[cite: 1]
+        await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken }).eq('serial', scannedSerial);
+        return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Authentic & Safe' });
+      } else if (item.device_id_hash === hashedDeviceToken) {
+        return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Scanned by you' });
       } else {
-        // Scan collision from a different device -> flag clone!
-        await supabase.from('child_items').update({ status: 'BURNED_ANOMALY' }).eq('serial', serial);
-        return setVerificationResult({ color: '#EF4444', text: '🔴 RED ALERT: Multiple device scans detected. Item Flagged.' });
+        await supabase.from('child_items').update({ status: 'BURNED_ANOMALY' }).eq('serial', scannedSerial);
+        return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Anomalous Scan Detected' });
       }
     }
 
-    return setVerificationResult({ color: '#F59E0B', text: '🟡 YELLOW: Unverified History (Pending Pharmacy Intake)' });
+    return setVerificationResult({ color: '#B45309', fontColor: '#FFFFFF', text: '🟡 YELLOW: Data Incomplete' });
+  };
+
+  const handleScan = (detectedCodes) => {
+    if (detectedCodes && detectedCodes.length > 0) {
+      const rawText = detectedCodes[0].rawValue;
+      
+      // Expected GS1 Syntax: https://medverify.app/01/{gtin}/21/{serial}[cite: 1]
+      const urlParts = rawText.split('/');
+      const gtinIndex = urlParts.indexOf('01') + 1;
+      const serialIndex = urlParts.indexOf('21') + 1;
+
+      if (gtinIndex > 0 && serialIndex > 0 && urlParts[gtinIndex] && urlParts[serialIndex]) {
+        setIsScanning(false); // Turn off camera
+        const extractedGtin = urlParts[gtinIndex];
+        const extractedSerial = urlParts[serialIndex];
+        
+        setScannedData({ gtin: extractedGtin, serial: extractedSerial });
+        executeVerification(extractedGtin, extractedSerial);
+      } else {
+        setIsScanning(false);
+        setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Invalid GS1 Format' });
+      }
+    }
   };
 
   return (
     <div>
       <h2>Consumer Scan Verification</h2>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
-        <label>GTIN: <input type="text" value={gtin} onChange={(e) => setGtin(e.target.value)} /></label>
-        <label>Serial Number: <input type="text" value={serial} onChange={(e) => setSerial(e.target.value)} /></label>
+      
+      <div style={{ marginBottom: '20px', maxWidth: '400px' }}>
         <label>Simulated Device ID: 
-          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} style={{ marginLeft: '10px', padding: '5px' }}>
             <option value="user-device-abc">Device A (Original Phone)</option>
             <option value="user-device-xyz">Device B (Cloner Phone)</option>
           </select>
         </label>
-
-        <button onClick={handleVerifyScan} style={{ padding: '10px', background: '#6366F1', color: '#fff', border: 'none' }}>
-          Simulate QR Scan
-        </button>
       </div>
 
+      {isScanning ? (
+        <div style={{ maxWidth: '400px', border: '4px solid #333', borderRadius: '8px', overflow: 'hidden' }}>
+          <Scanner 
+            onScan={handleScan} 
+            onError={(error) => console.log(error?.message)} 
+          />
+        </div>
+      ) : (
+        <button 
+          onClick={() => {
+            setIsScanning(true);
+            setVerificationResult(null);
+            setScannedData({ gtin: '', serial: '' });
+          }} 
+          style={{ padding: '10px 20px', background: '#0056B3', color: '#fff', border: 'none', cursor: 'pointer', borderRadius: '5px' }}
+        >
+          Scan Another Item
+        </button>
+      )}
+
+      {scannedData.gtin && (
+        <p style={{ marginTop: '15px' }}>
+          <strong>Detected GTIN:</strong> {scannedData.gtin} | <strong>Serial:</strong> {scannedData.serial}
+        </p>
+      )}
+
       {verificationResult && (
-        <div style={{ marginTop: '20px', padding: '15px', borderRadius: '8px', color: '#fff', background: verificationResult.color, fontWeight: 'bold' }}>
+        <div style={{ 
+          marginTop: '20px', 
+          padding: '20px', 
+          borderRadius: '8px', 
+          backgroundColor: verificationResult.color, 
+          color: verificationResult.fontColor, 
+          fontWeight: 'bold',
+          fontSize: '18px',
+          textAlign: 'center',
+          border: '2px solid rgba(0,0,0,0.1)'
+        }}>
           {verificationResult.text}
         </div>
       )}
