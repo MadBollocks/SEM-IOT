@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
-import { Scanner } from '@yudiel/react-qr-scanner';
+import QRScanner from './components/QRScanner';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('manufacturer');
@@ -215,7 +215,7 @@ function ConsumerSimView() {
 
     if (item.status === 'RECEIVED_AT_PHARMACY' || item.status === 'ACTIVATED') {
       if (!item.device_id_hash) {
-        // Store only the irreversible hash in the database[cite: 1]
+        // Store only the irreversible hash in the database
         await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken }).eq('serial', scannedSerial);
         return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Authentic & Safe' });
       } else if (item.device_id_hash === hashedDeviceToken) {
@@ -229,11 +229,12 @@ function ConsumerSimView() {
     return setVerificationResult({ color: '#B45309', fontColor: '#FFFFFF', text: '🟡 YELLOW: Data Incomplete' });
   };
 
+  // Reuse existing GS1 parsing logic: handleScan expects detectedCodes array
   const handleScan = (detectedCodes) => {
     if (detectedCodes && detectedCodes.length > 0) {
       const rawText = detectedCodes[0].rawValue;
       
-      // Expected GS1 Syntax: https://medverify.app/01/{gtin}/21/{serial}[cite: 1]
+      // Expected GS1 Syntax: https://medverify.app/01/{gtin}/21/{serial}
       const urlParts = rawText.split('/');
       const gtinIndex = urlParts.indexOf('01') + 1;
       const serialIndex = urlParts.indexOf('21') + 1;
@@ -252,6 +253,15 @@ function ConsumerSimView() {
     }
   };
 
+  // This handles raw decoded strings from QRScanner
+  const handleScanFromRaw = (rawText) => {
+    if (rawText) {
+      handleScan([{ rawValue: rawText }]);
+    } else {
+      setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: No code detected in image' });
+    }
+  };
+
   return (
     <div>
       <h2>Consumer Scan Verification</h2>
@@ -267,9 +277,11 @@ function ConsumerSimView() {
 
       {isScanning ? (
         <div style={{ maxWidth: '400px', border: '4px solid #333', borderRadius: '8px', overflow: 'hidden' }}>
-          <Scanner 
-            onScan={handleScan} 
-            onError={(error) => console.log(error?.message)} 
+          <QRScanner
+            onDetected={(rawText) => {
+              handleScanFromRaw(rawText);
+            }}
+            verbose={false}
           />
         </div>
       ) : (
