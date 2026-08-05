@@ -216,12 +216,12 @@ function ConsumerSimView() {
     if (item.status === 'RECEIVED_AT_PHARMACY' || item.status === 'ACTIVATED') {
       if (!item.device_id_hash) {
         // Store only the irreversible hash in the database
-        await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken }).eq('serial', scannedSerial);
+        await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken }).match({ gtin: scannedGtin, serial: scannedSerial });
         return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Authentic & Safe' });
       } else if (item.device_id_hash === hashedDeviceToken) {
         return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Scanned by you' });
       } else {
-        await supabase.from('child_items').update({ status: 'BURNED_ANOMALY' }).eq('serial', scannedSerial);
+        await supabase.from('child_items').update({ status: 'BURNED_ANOMALY' }).match({ gtin: scannedGtin, serial: scannedSerial });
         return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Anomalous Scan Detected' });
       }
     }

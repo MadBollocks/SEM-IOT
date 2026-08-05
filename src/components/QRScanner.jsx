@@ -24,51 +24,48 @@ export default function QRScanner({ onDetected, qrRegionId = 'qr-scanner', fps =
         return;
       }
 
-      // Detect camera support
       try {
-        const devices = await Html5Qrcode.getCameras();
+        // Check for cameras (best-effort)
+        const devices = await Html5Qrcode.getCameras().catch(() => []);
         if (!isMounted) return;
-        if (devices && devices.length) {
-          setSupported(prev => ({ ...prev, camera: true }));
-          const cameraId = devices[0].id; // default to first; html5-qrcode will accept facingMode constraints below
-          
-          html5QrcodeRef.current = new Html5Qrcode(qrRegionId, /* verbose= */ !!verbose);
+        if (devices && devices.length) setSupported(prev => ({ ...prev, camera: true }));
 
-          const config = {
-            fps,
-            qrbox: { width: 300, height: 200 }, // adjust for layout
-            experimentalFeatures: { useBarCodeDetectorIfSupported: true }, // speeds up on supporting browsers
-            // cameraConstraints allows forcing the back camera on mobile
-            // many browsers accept { facingMode: "environment" }
-            cameraIdOrConfig: { facingMode: { exact: "environment" } }
-          };
+        html5QrcodeRef.current = new Html5Qrcode(qrRegionId, /* verbose= */ !!verbose);
 
-          await html5QrcodeRef.current.start(
-            config.cameraIdOrConfig,
-            config,
-            (decodedText) => {
-              // stop scanning after first detection
-              if (verbose) console.log('QR detected:', decodedText);
-              stopScanner();
-              onDetected && onDetected(decodedText);
-            },
-            (errorMessage) => {
-              if (verbose) console.debug('QR scan error:', errorMessage);
-            }
-          );
+        const config = {
+          fps,
+          qrbox: { width: 300, height: 200 },
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+        };
 
-          setScanning(true);
+        // Use facingMode preference (broader support than exact)
+        const cameraConfig = { facingMode: "environment" };
 
-          // Check for torch support (optional)
-          try {
-            const track = html5QrcodeRef.current.getRunningTrack();
-            if (track && typeof track.getCapabilities === 'function') {
-              const caps = track.getCapabilities();
-              if (caps && caps.torch) setSupported(prev => ({ ...prev, torch: true }));
-            }
-          } catch (e) {
-            if (verbose) console.debug('Torch detection failed', e);
+        await html5QrcodeRef.current.start(
+          cameraConfig,
+          config,
+          async (decodedText) => {
+            if (verbose) console.log('QR detected:', decodedText);
+            // stop scanning after first detection
+            try { await stopScanner(); } catch (e) {}
+            onDetected && onDetected(decodedText);
+          },
+          (errorMessage) => {
+            if (verbose) console.debug('QR scan error:', errorMessage);
           }
+        );
+
+        setScanning(true);
+
+        // Check for torch support (optional)
+        try {
+          const track = html5QrcodeRef.current.getRunningTrack?.();
+          if (track && typeof track.getCapabilities === 'function') {
+            const caps = track.getCapabilities();
+            if (caps && caps.torch) setSupported(prev => ({ ...prev, torch: true }));
+          }
+        } catch (e) {
+          if (verbose) console.debug('Torch detection failed', e);
         }
       } catch (err) {
         if (verbose) console.error('Failed to start scanner', err);
@@ -79,7 +76,7 @@ export default function QRScanner({ onDetected, qrRegionId = 'qr-scanner', fps =
 
     return () => {
       isMounted = false;
-      stopScanner();
+      stopScanner().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -103,7 +100,7 @@ export default function QRScanner({ onDetected, qrRegionId = 'qr-scanner', fps =
   async function toggleTorch() {
     if (!html5QrcodeRef.current) return;
     try {
-      const track = html5QrcodeRef.current.getRunningTrack();
+      const track = html5QrcodeRef.current.getRunningTrack?.();
       if (!track) return;
       // Some devices support applyConstraints for torch
       await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
@@ -120,29 +117,31 @@ export default function QRScanner({ onDetected, qrRegionId = 'qr-scanner', fps =
       const result = await Html5Qrcode.scanFileV2(file, true);
       if (result && result.length) {
         const decoded = result[0].decodedText || result[0].text;
+        try { await stopScanner(); } catch (e) {}
         onDetected && onDetected(decoded);
       } else {
         onDetected && onDetected(null);
       }
     } catch (err) {
       console.warn('File scan failed', err);
+      onDetected && onDetected(null);
     }
   }
 
   return (
     <div>
       <div id={qrRegionId} style={{ width: '100%', maxWidth: '480px', margin: '0 auto' }} />
-      <div style={{ display: 'flex', gap: '8px', marginTop: '8px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '8px', alignItems: 'center', justifyContent: 'center' }}>
         {supported.torch && (
           <button onClick={toggleTorch} style={{ padding: '8px 12px' }}>
             {torchOn ? 'Turn Torch Off' : 'Turn Torch On'}
           </button>
         )}
-        <label style={{ display: 'inline-block', padding: '8px 12px', background: '#eee', cursor: 'pointer' }}>
+        <label style={{ display: 'inline-block', padding: '8px 12px', background: '#eee', cursor: 'pointer', borderRadius: 4 }}>
           Upload Image
           <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display: 'none' }} />
         </label>
-        <button onClick={stopScanner} style={{ padding: '8px 12px' }}>
+        <button onClick={() => stopScanner()} style={{ padding: '8px 12px' }}>
           Stop
         </button>
       </div>
