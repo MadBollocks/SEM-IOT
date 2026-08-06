@@ -11,8 +11,12 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",
-    "@yudiel/react-qr-scanner": "^2.6.0",
+    "file-saver": "^2.0.5",
+    "html2canvas": "^1.4.1",
     "html5-qrcode": "^2.3.8",
+    "jspdf": "^4.2.1",
+    "jszip": "^3.10.1",
+    "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

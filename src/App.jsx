@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
 import QRScanner from './components/QRScanner';
+import ManufacturerSerialization from './components/ManufacturerSerialization';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('manufacturer');
@@ -34,7 +35,7 @@ export default function App() {
       <hr />
 
       {/* Screen Views */}
-      {activeTab === 'manufacturer' && <ManufacturerView />}
+      {activeTab === 'manufacturer' && <ManufacturerSerialization />}
       {activeTab === 'pharmacy' && <PharmacySimView />}
       {activeTab === 'consumer' && <ConsumerSimView />}
     </div>
