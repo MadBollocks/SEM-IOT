@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabaseClient';
 import QRScanner from './components/QRScanner';
 import ManufacturerSerialization from './components/ManufacturerSerialization';
