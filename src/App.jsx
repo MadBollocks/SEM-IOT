@@ -1,198 +1,389 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabaseClient';
 import QRScanner from './components/QRScanner';
 import ManufacturerSerialization from './components/ManufacturerSerialization';
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState('manufacturer');
+const ROLE_LABELS = {
+  manufacturer: 'Manufacturer',
+  pharmacy: 'Pharmacy',
+  consumer: 'Consumer'
+};
 
-  return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', maxWidth: '800px', margin: '20px auto', padding: '20px' }}>
-      <h1>MedVerify & ColdGuard Prototype</h1>
-      
-      {/* Navigation Tabs */}
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-        <button 
-          onClick={() => setActiveTab('manufacturer')} 
-          style={tabStyle(activeTab === 'manufacturer')}
-        >
-          1. Manufacturer
-        </button>
-        <button 
-          onClick={() => setActiveTab('pharmacy')} 
-          style={tabStyle(activeTab === 'pharmacy')}
-        >
-          2. Pharmacy Intake
-        </button>
-        <button 
-          onClick={() => setActiveTab('consumer')} 
-          style={tabStyle(activeTab === 'consumer')}
-        >
-          3. Consumer Scan
-        </button>
-      </div>
+const initialAuthForm = {
+  email: '',
+  password: '',
+  confirmPassword: '',
+  role: 'manufacturer'
+};
 
-      <hr />
-
-      {/* Screen Views */}
-      {activeTab === 'manufacturer' && <ManufacturerSerialization />}
-      {activeTab === 'pharmacy' && <PharmacySimView />}
-      {activeTab === 'consumer' && <ConsumerSimView />}
-    </div>
-  );
+function getUserRole(user) {
+  return user?.user_metadata?.role || 'consumer';
 }
 
-const tabStyle = (isActive) => ({
-  padding: '10px 20px',
-  cursor: 'pointer',
-  background: isActive ? '#0070f3' : '#eee',
-  color: isActive ? '#fff' : '#333',
-  border: 'none',
-  borderRadius: '5px',
-  fontWeight: 'bold'
-});
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [authMode, setAuthMode] = useState('login');
+  const [authForm, setAuthForm] = useState(initialAuthForm);
+  const [authError, setAuthError] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-/* ==========================================================================
-   1. MANUFACTURER SCREEN (Direct Client-Side Batch Creation)
-   ========================================================================== */
-function ManufacturerView() {
-  const [gtin, setGtin] = useState('00312345678906');
-  const [quantity, setQuantity] = useState(50); // Kept modest for fast browser generation
-  const [parentSscc, setParentSscc] = useState(`SSCC-${Math.floor(100000 + Math.random() * 900000)}`);
-  const [status, setStatus] = useState('');
+  useEffect(() => {
+    let isMounted = true;
 
-  const handleGenerateBatch = async (e) => {
-    e.preventDefault();
-    setStatus('Creating parent batch...');
+    supabase.auth.getSession().then(({ data }) => {
+      if (isMounted) {
+        setSession(data.session ?? null);
+        setLoadingSession(false);
+      }
+    });
 
-    // 1. Insert Parent Shipment directly
-    const { error: parentErr } = await supabase
-      .from('parent_shipments')
-      .insert([{ sscc: parentSscc, status: 'IN_TRANSIT', is_compromised: false }]);
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession ?? null);
+      setLoadingSession(false);
+    });
 
-    if (parentErr) return setStatus(`❌ Error: ${parentErr.message}`);
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
-    // 2. Generate and Insert Child Serials
-    setStatus(`Generating ${quantity} serial items...`);
-    const children = [];
-    for (let i = 1; i <= quantity; i++) {
-      children.push({
-        gtin: gtin,
-        serial: i.toString().padStart(6, '0'),
-        parent_sscc: parentSscc,
-        status: 'IN_TRANSIT'
-      });
-    }
+  const currentRole = useMemo(() => getUserRole(session?.user), [session]);
 
-    const { error: childErr } = await supabase.from('child_items').insert(children);
-    if (childErr) return setStatus(`❌ Error inserting children: ${childErr.message}`);
-
-    setStatus(`✅ Batch created successfully! SSCC: ${parentSscc}`);
+  const updateFormField = (field, value) => {
+    setAuthForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const switchAuthMode = (mode) => {
+    setAuthMode(mode);
+    setAuthError('');
+    setAuthMessage('');
+  };
+
+  const handleRegister = async (event) => {
+    event.preventDefault();
+    setAuthError('');
+    setAuthMessage('');
+
+    if (authForm.password.length < 8) {
+      setAuthError('Password must be at least 8 characters long.');
+      return;
+    }
+
+    if (authForm.password !== authForm.confirmPassword) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    const { data, error } = await supabase.auth.signUp({
+      email: authForm.email.trim(),
+      password: authForm.password,
+      options: {
+        data: {
+          role: authForm.role
+        }
+      }
+    });
+    setIsSubmitting(false);
+
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    setAuthForm(initialAuthForm);
+
+    if (!data.session) {
+      setAuthMessage('Account created. Check your email to confirm your account, then sign in.');
+      setAuthMode('login');
+      return;
+    }
+
+    setAuthMessage('Account created and signed in.');
+  };
+
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    setAuthError('');
+    setAuthMessage('');
+    setIsSubmitting(true);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authForm.email.trim(),
+      password: authForm.password
+    });
+
+    setIsSubmitting(false);
+
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    setAuthMessage('Welcome back.');
+    setAuthForm(initialAuthForm);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAuthForm(initialAuthForm);
+    setAuthMessage('');
+    setAuthError('');
+  };
+
+  if (loadingSession) {
+    return <div className="app-shell loading-screen">Loading...</div>;
+  }
+
+  if (!session) {
+    const isLogin = authMode === 'login';
+
+    return (
+      <div className="auth-page">
+        <div className="auth-panel auth-brand">
+          <p className="eyebrow">SEM-IOT</p>
+          <h1>MedVerify Portal</h1>
+          <p>
+            Secure pharmaceutical serialization, pharmacy cold-chain handoff, and consumer authenticity
+            verification in one platform.
+          </p>
+        </div>
+
+        <div className="auth-panel auth-form-panel">
+          <h2>{isLogin ? 'Sign in' : 'Create account'}</h2>
+          <p className="auth-subtitle">
+            {isLogin
+              ? 'Use your account to access your role dashboard.'
+              : 'Create your account and choose the dashboard role you need.'}
+          </p>
+
+          <form onSubmit={isLogin ? handleLogin : handleRegister} className="auth-form">
+            <label>
+              Email
+              <input
+                type="email"
+                value={authForm.email}
+                onChange={(e) => updateFormField('email', e.target.value)}
+                autoComplete="email"
+                required
+              />
+            </label>
+
+            <label>
+              Password
+              <input
+                type="password"
+                value={authForm.password}
+                onChange={(e) => updateFormField('password', e.target.value)}
+                autoComplete={isLogin ? 'current-password' : 'new-password'}
+                required
+              />
+            </label>
+
+            {!isLogin && (
+              <>
+                <label>
+                  Confirm password
+                  <input
+                    type="password"
+                    value={authForm.confirmPassword}
+                    onChange={(e) => updateFormField('confirmPassword', e.target.value)}
+                    autoComplete="new-password"
+                    required
+                  />
+                </label>
+
+                <label>
+                  Role
+                  <select value={authForm.role} onChange={(e) => updateFormField('role', e.target.value)}>
+                    <option value="manufacturer">Manufacturer</option>
+                    <option value="pharmacy">Pharmacy</option>
+                    <option value="consumer">Consumer</option>
+                  </select>
+                </label>
+              </>
+            )}
+
+            {authError && <p className="auth-feedback error">{authError}</p>}
+            {authMessage && <p className="auth-feedback success">{authMessage}</p>}
+
+            <button type="submit" className="primary-btn" disabled={isSubmitting}>
+              {isSubmitting ? 'Please wait...' : isLogin ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => switchAuthMode(isLogin ? 'register' : 'login')}
+          >
+            {isLogin ? "Don't have an account? Register" : 'Already have an account? Sign in'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <h2>Manufacturer Admin</h2>
-      <form onSubmit={handleGenerateBatch} style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
-        <label>GTIN: <input type="text" value={gtin} onChange={(e) => setGtin(e.target.value)} required /></label>
-        <label>Quantity: <input type="number" value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} required /></label>
-        <label>Parent SSCC: <input type="text" value={parentSscc} onChange={(e) => setParentSscc(e.target.value)} required /></label>
-        <button type="submit" style={{ padding: '10px', background: '#0070f3', color: '#fff', border: 'none' }}>
-          Generate Batch & Items
+    <div className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">MedVerify Platform</p>
+          <h1>{ROLE_LABELS[currentRole] || 'User'} Dashboard</h1>
+          <p className="header-meta">Signed in as {session.user.email}</p>
+        </div>
+        <button type="button" className="secondary-btn" onClick={handleLogout}>
+          Sign out
         </button>
-      </form>
-      {status && <p><strong>{status}</strong></p>}
+      </header>
+
+      <main className="dashboard-main">
+        {currentRole === 'manufacturer' && (
+          <RoleHomeCard
+            title="Manufacturer Control Center"
+            description="Create shipments, serialize medicine packs, and export operational label bundles."
+          >
+            <ManufacturerSerialization />
+          </RoleHomeCard>
+        )}
+
+        {currentRole === 'pharmacy' && (
+          <RoleHomeCard
+            title="Pharmacy Intake Console"
+            description="Capture cold-chain handoff telemetry and mark shipments as received."
+          >
+            <PharmacyDashboard />
+          </RoleHomeCard>
+        )}
+
+        {currentRole === 'consumer' && (
+          <RoleHomeCard
+            title="Consumer Verification Center"
+            description="Scan labels and verify authenticity and thermal integrity before use."
+          >
+            <ConsumerDashboard />
+          </RoleHomeCard>
+        )}
+      </main>
     </div>
   );
 }
 
-/* ==========================================================================
-   2. PHARMACY INTAKE SCREEN (Hardware Simulator)
-   ========================================================================== */
-function PharmacySimView() {
+function RoleHomeCard({ title, description, children }) {
+  return (
+    <section className="role-card">
+      <h2>{title}</h2>
+      <p className="role-description">{description}</p>
+      <div className="role-content">{children}</div>
+    </section>
+  );
+}
+
+function PharmacyDashboard() {
   const [sscc, setSscc] = useState('');
   const [minTemp, setMinTemp] = useState(3.0);
   const [maxTemp, setMaxTemp] = useState(7.5);
   const [status, setStatus] = useState('');
 
   const handleSimulateSync = async () => {
-    if (!sscc) return alert('Enter an SSCC code');
+    if (!sscc) {
+      setStatus('❌ Enter an SSCC code.');
+      return;
+    }
+
     setStatus('Syncing environmental payload...');
 
-    // Check if shipment was breached (e.g., standard cold chain is 2°C - 8°C)
     const isCompromised = minTemp < 2.0 || maxTemp > 8.0;
 
-    // 1. Log Thermal Audit Data
-    const { error: logErr } = await supabase.from('thermal_logs').insert([{
-      parent_sscc: sscc,
-      min_temp: minTemp,
-      max_temp: maxTemp,
-      out_of_bounds_duration: isCompromised ? 120 : 0
-    }]);
+    const { error: logErr } = await supabase.from('thermal_logs').insert([
+      {
+        parent_sscc: sscc,
+        min_temp: minTemp,
+        max_temp: maxTemp,
+        out_of_bounds_duration: isCompromised ? 120 : 0
+      }
+    ]);
 
-    if (logErr) return setStatus(`❌ Logging failed: ${logErr.message}`);
+    if (logErr) {
+      setStatus(`❌ Logging failed: ${logErr.message}`);
+      return;
+    }
 
-    // 2. Update Parent State & Safety Flag
     const { error: parentErr } = await supabase
       .from('parent_shipments')
       .update({ status: 'RECEIVED_AT_PHARMACY', is_compromised: isCompromised })
       .eq('sscc', sscc);
 
-    if (parentErr) return setStatus(`❌ Parent update failed: ${parentErr.message}`);
+    if (parentErr) {
+      setStatus(`❌ Parent update failed: ${parentErr.message}`);
+      return;
+    }
 
-    // 3. Update all linked child items state to RECEIVED_AT_PHARMACY
     await supabase.from('child_items').update({ status: 'RECEIVED_AT_PHARMACY' }).eq('parent_sscc', sscc);
 
     if (isCompromised) {
       setStatus(`🔴 Handoff complete with BREACH ALERT. Max temp reached ${maxTemp}°C.`);
-    } else {
-      setStatus(`🟢 Handoff complete! Cold-chain verified safe.`);
+      return;
     }
+
+    setStatus('🟢 Handoff complete! Cold-chain verified safe.');
   };
 
   return (
-    <div>
-      <h2>Pharmacy Intake (Simulated BLE Sync)</h2>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
-        <label>Parent SSCC Code: <input type="text" placeholder="SSCC-XXXXXX" value={sscc} onChange={(e) => setSscc(e.target.value)} /></label>
-        
-        <div style={{ border: '1px solid #ccc', padding: '10px', borderRadius: '5px' }}>
-          <h4>Simulated Sensor Hardware Readings:</h4>
-          <label>Min Temp (°C): <input type="number" step="0.1" value={minTemp} onChange={(e) => setMinTemp(Number(e.target.value))} /></label>
-          <br /><br />
-          <label>Max Temp (°C): <input type="number" step="0.1" value={maxTemp} onChange={(e) => setMaxTemp(Number(e.target.value))} /></label>
-        </div>
+    <div className="workflow-panel">
+      <label>
+        Parent SSCC Code
+        <input
+          type="text"
+          placeholder="SSCC-XXXXXX"
+          value={sscc}
+          onChange={(e) => setSscc(e.target.value)}
+        />
+      </label>
 
-        <button onClick={handleSimulateSync} style={{ padding: '10px', background: '#10B981', color: '#fff', border: 'none' }}>
-          Simulate BLE Thermal Handshake
-        </button>
+      <div className="sensor-box">
+        <h3>Simulated Sensor Readings</h3>
+        <label>
+          Min Temp (°C)
+          <input type="number" step="0.1" value={minTemp} onChange={(e) => setMinTemp(Number(e.target.value))} />
+        </label>
+        <label>
+          Max Temp (°C)
+          <input type="number" step="0.1" value={maxTemp} onChange={(e) => setMaxTemp(Number(e.target.value))} />
+        </label>
       </div>
-      {status && <p><strong>{status}</strong></p>}
+
+      <button type="button" className="primary-btn" onClick={handleSimulateSync}>
+        Simulate BLE Thermal Handshake
+      </button>
+
+      {status && <p className="status-line">{status}</p>}
     </div>
   );
 }
 
-/* ==========================================================================
-   3. CONSUMER VERIFICATION SCREEN (Stateful Serialization UI)
-   ========================================================================== */
 async function hashDeviceId(rawId) {
   const encoder = new TextEncoder();
-  const data = encoder.encode(rawId + "MedVerify_SecureSalt_2026"); 
+  const data = encoder.encode(`${rawId}MedVerify_SecureSalt_2026`);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function ConsumerSimView() {
+function ConsumerDashboard() {
   const [deviceId, setDeviceId] = useState('user-device-abc');
   const [verificationResult, setVerificationResult] = useState(null);
   const [isScanning, setIsScanning] = useState(true);
   const [scannedData, setScannedData] = useState({ gtin: '', serial: '' });
 
   const executeVerification = async (scannedGtin, scannedSerial) => {
-    setVerificationResult({ color: '#333', fontColor: '#FFF', text: 'Verifying with Supabase...' });
+    setVerificationResult({ color: '#333', fontColor: '#fff', text: 'Verifying with Supabase...' });
 
-    // Hash the ID locally before database comparison
     const hashedDeviceToken = await hashDeviceId(deviceId);
 
     const { data: item, error } = await supabase
@@ -203,119 +394,119 @@ function ConsumerSimView() {
       .single();
 
     if (error || !item) {
-      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Invalid Serial Number' });
+      setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: Invalid Serial Number' });
+      return;
     }
 
     if (item.parent_shipments?.is_compromised) {
-      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Thermal Breach Detected' });
+      setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: Thermal Breach Detected' });
+      return;
     }
 
     if (item.status === 'BURNED_ANOMALY') {
-      return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Product Flagged as Clone' });
+      setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: Product Flagged as Clone' });
+      return;
     }
 
     if (item.status === 'RECEIVED_AT_PHARMACY' || item.status === 'ACTIVATED') {
       if (!item.device_id_hash) {
-        // Store only the irreversible hash in the database
-        await supabase.from('child_items').update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken }).match({ gtin: scannedGtin, serial: scannedSerial });
-        return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Authentic & Safe' });
-      } else if (item.device_id_hash === hashedDeviceToken) {
-        return setVerificationResult({ color: '#047857', fontColor: '#FFFFFF', text: '🟢 GREEN: Scanned by you' });
-      } else {
-        await supabase.from('child_items').update({ status: 'BURNED_ANOMALY' }).match({ gtin: scannedGtin, serial: scannedSerial });
-        return setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Anomalous Scan Detected' });
+        await supabase
+          .from('child_items')
+          .update({ status: 'ACTIVATED', device_id_hash: hashedDeviceToken })
+          .match({ gtin: scannedGtin, serial: scannedSerial });
+
+        setVerificationResult({ color: '#047857', fontColor: '#fff', text: '🟢 GREEN: Authentic & Safe' });
+        return;
       }
+
+      if (item.device_id_hash === hashedDeviceToken) {
+        setVerificationResult({ color: '#047857', fontColor: '#fff', text: '🟢 GREEN: Scanned by you' });
+        return;
+      }
+
+      await supabase
+        .from('child_items')
+        .update({ status: 'BURNED_ANOMALY' })
+        .match({ gtin: scannedGtin, serial: scannedSerial });
+
+      setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: Anomalous Scan Detected' });
+      return;
     }
 
-    return setVerificationResult({ color: '#B45309', fontColor: '#FFFFFF', text: '🟡 YELLOW: Data Incomplete' });
+    setVerificationResult({ color: '#b45309', fontColor: '#fff', text: '🟡 YELLOW: Data Incomplete' });
   };
 
-  // Reuse existing GS1 parsing logic: handleScan expects detectedCodes array
   const handleScan = (detectedCodes) => {
-    if (detectedCodes && detectedCodes.length > 0) {
-      const rawText = detectedCodes[0].rawValue;
-      
-      // Expected GS1 Syntax: https://medverify.app/01/{gtin}/21/{serial}
-      const urlParts = rawText.split('/');
-      const gtinIndex = urlParts.indexOf('01') + 1;
-      const serialIndex = urlParts.indexOf('21') + 1;
-
-      if (gtinIndex > 0 && serialIndex > 0 && urlParts[gtinIndex] && urlParts[serialIndex]) {
-        setIsScanning(false); // Turn off camera
-        const extractedGtin = urlParts[gtinIndex];
-        const extractedSerial = urlParts[serialIndex];
-        
-        setScannedData({ gtin: extractedGtin, serial: extractedSerial });
-        executeVerification(extractedGtin, extractedSerial);
-      } else {
-        setIsScanning(false);
-        setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: Invalid GS1 Format' });
-      }
+    if (!detectedCodes || detectedCodes.length === 0) {
+      return;
     }
+
+    const rawText = detectedCodes[0].rawValue;
+    const urlParts = rawText.split('/');
+    const gtinIndex = urlParts.indexOf('01') + 1;
+    const serialIndex = urlParts.indexOf('21') + 1;
+
+    if (gtinIndex > 0 && serialIndex > 0 && urlParts[gtinIndex] && urlParts[serialIndex]) {
+      setIsScanning(false);
+      const extractedGtin = urlParts[gtinIndex];
+      const extractedSerial = urlParts[serialIndex];
+      setScannedData({ gtin: extractedGtin, serial: extractedSerial });
+      executeVerification(extractedGtin, extractedSerial);
+      return;
+    }
+
+    setIsScanning(false);
+    setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: Invalid GS1 Format' });
   };
 
-  // This handles raw decoded strings from QRScanner
   const handleScanFromRaw = (rawText) => {
     if (rawText) {
       handleScan([{ rawValue: rawText }]);
-    } else {
-      setVerificationResult({ color: '#B91C1C', fontColor: '#FFFFFF', text: '🔴 RED ALERT: No code detected in image' });
+      return;
     }
+
+    setVerificationResult({ color: '#b91c1c', fontColor: '#fff', text: '🔴 RED ALERT: No code detected in image' });
   };
 
   return (
-    <div>
-      <h2>Consumer Scan Verification</h2>
-      
-      <div style={{ marginBottom: '20px', maxWidth: '400px' }}>
-        <label>Simulated Device ID: 
-          <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} style={{ marginLeft: '10px', padding: '5px' }}>
-            <option value="user-device-abc">Device A (Original Phone)</option>
-            <option value="user-device-xyz">Device B (Cloner Phone)</option>
-          </select>
-        </label>
-      </div>
+    <div className="workflow-panel">
+      <label>
+        Simulated Device ID
+        <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
+          <option value="user-device-abc">Device A (Original Phone)</option>
+          <option value="user-device-xyz">Device B (Cloner Phone)</option>
+        </select>
+      </label>
 
       {isScanning ? (
-        <div style={{ maxWidth: '400px', border: '4px solid #333', borderRadius: '8px', overflow: 'hidden' }}>
-          <QRScanner
-            onDetected={(rawText) => {
-              handleScanFromRaw(rawText);
-            }}
-            verbose={false}
-          />
+        <div className="scanner-frame">
+          <QRScanner onDetected={handleScanFromRaw} verbose={false} />
         </div>
       ) : (
-        <button 
+        <button
+          type="button"
+          className="secondary-btn"
           onClick={() => {
             setIsScanning(true);
             setVerificationResult(null);
             setScannedData({ gtin: '', serial: '' });
-          }} 
-          style={{ padding: '10px 20px', background: '#0056B3', color: '#fff', border: 'none', cursor: 'pointer', borderRadius: '5px' }}
+          }}
         >
           Scan Another Item
         </button>
       )}
 
       {scannedData.gtin && (
-        <p style={{ marginTop: '15px' }}>
+        <p className="status-line">
           <strong>Detected GTIN:</strong> {scannedData.gtin} | <strong>Serial:</strong> {scannedData.serial}
         </p>
       )}
 
       {verificationResult && (
-        <div style={{ 
-          marginTop: '20px', 
-          padding: '20px', 
-          borderRadius: '8px', 
-          backgroundColor: verificationResult.color, 
-          color: verificationResult.fontColor, 
-          fontWeight: 'bold',
-          fontSize: '18px',
-          textAlign: 'center',
-          border: '2px solid rgba(0,0,0,0.1)'
-        }}>
+        <div
+          className="verification-result"
+          style={{ backgroundColor: verificationResult.color, color: verificationResult.fontColor }}
+        >
           {verificationResult.text}
         </div>
       )}
